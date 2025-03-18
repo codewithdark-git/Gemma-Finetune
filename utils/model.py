@@ -44,7 +44,7 @@ class GemmaFineTuning:
         ]
         # Default hyperparameters
         self.default_params = {
-            "model_name": "google/gemma-2b",
+            "model_name": "unsloth/gemma-3-1b-it-unsloth-bnb-4bit",
             "learning_rate": 2e-5,
             "batch_size": 8,
             "epochs": 3,
@@ -63,10 +63,10 @@ class GemmaFineTuning:
         try:
             # Map UI model names to actual model IDs
             model_mapping = {
-                "google/gemma-2b": "unsloth/gemma-2b-it-unsloth-bnb-4bit",
-                "google/gemma-7b": "unsloth/gemma-7b-it-unsloth-bnb-4bit",
-                "google/gemma-2b-it": "unsloth/gemma-2b-it-unsloth-bnb-4bit",
-                "google/gemma-7b-it": "unsloth/gemma-7b-it-unsloth-bnb-4bit"
+                "google/gemma3-1b": "unsloth/gemma-3-1b-it-unsloth-bnb-4bit",
+                "google/gemma3-4b": "unsloth/gemma-3-4b-it-unsloth-bnb-4bit",
+                "google/gemma3-12b": "unsloth/gemma-3-12b-it-unsloth-bnb-4bit",
+                "google/gemma3-27b": "unsloth/gemma-3-27b-it-unsloth-bnb-4bit"
             }
 
             actual_model_name = model_mapping.get(model_name, model_name)

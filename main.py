@@ -32,10 +32,10 @@ class GemmaUI:
                         with gr.Column():
                             model_name = gr.Dropdown(
                                 choices=[
-                                    "google/gemma-2b",
-                                    "google/gemma-7b",
-                                    "google/gemma-2b-it",
-                                    "google/gemma-7b-it"
+                                    "google/gemma3-1b",
+                                    "google/gemma3-4b",
+                                    "google/gemma3-12b",
+                                    "google/gemma3-27b"
                                 ],
                                 value=self.default_params["model_name"],
                                 label="Model Name",
