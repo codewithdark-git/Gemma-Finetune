@@ -14,7 +14,7 @@ A user-friendly interface for fine-tuning Google's Gemma models using Unsloth op
 ## Installation
 
 ```bash
-git clone https://github.com/yourusername/Gemma-Finetune.git
+git clone https://github.com/codewithdark-git/Gemma-Finetune.git
 cd Gemma-Finetune
 pip install -r requirements.txt
 ```
@@ -26,9 +26,7 @@ pip install -r requirements.txt
 python main.py
 ```
 
-2. Open your browser and go to: http://localhost:7860
-
-3. Follow the UI steps:
+2. Follow the UI steps:
    - Upload your dataset
    - Configure model parameters
    - Start training
