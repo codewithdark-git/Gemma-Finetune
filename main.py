@@ -1,4 +1,6 @@
 import gradio as gr
+import threading
+import queue
 from utils.check_dataset import validate_dataset, generate_dataset_report
 from utils.sample_dataset import generate_sample_datasets
 from utils.model import GemmaFineTuning
@@ -7,6 +9,8 @@ class GemmaUI:
     def __init__(self):
         self.model_instance = GemmaFineTuning()
         self.default_params = self.model_instance.default_params
+        self.log_queue = queue.Queue()
+        self.training_active = False
 
     def create_ui(self):
         """Create the Gradio interface"""
@@ -108,14 +112,32 @@ class GemmaUI:
 
                 with gr.TabItem("3. Training"):
                     with gr.Row():
-                        with gr.Column():
-                            start_training_button = gr.Button("Start Fine-tuning")
+                        with gr.Column(scale=1):
+                            start_training_button = gr.Button("Start Fine-tuning", variant="primary")
                             stop_training_button = gr.Button("Stop Training", variant="stop")
                             training_status = gr.Textbox(label="Training Status", interactive=False)
+                            
+                            # Add detailed logging components
+                            with gr.Accordion("Training Logs", open=True):
+                                log_output = gr.Markdown("")
+                                auto_scroll = gr.Checkbox(value=True, label="Auto-scroll logs")
+                                clear_logs = gr.Button("Clear Logs")
 
-                        with gr.Column():
+                        with gr.Column(scale=1):
                             progress_plot = gr.Plot(label="Training Progress")
                             refresh_plot_button = gr.Button("Refresh Plot")
+                            
+                            # Add training metrics
+                            with gr.Accordion("Training Metrics", open=True):
+                                current_loss = gr.Number(label="Current Loss", value=0.0)
+                                avg_loss = gr.Number(label="Average Loss", value=0.0)
+                                progress_bar = gr.Slider(
+                                    label="Training Progress",
+                                    minimum=0,
+                                    maximum=100,
+                                    value=0,
+                                    interactive=False
+                                )
 
                 with gr.TabItem("4. Evaluation & Export"):
                     with gr.Row():
@@ -144,50 +166,76 @@ class GemmaUI:
                             export_button = gr.Button("Export Model")
                             export_status = gr.Textbox(label="Export Status", interactive=False)
 
-            # Functionality
+            def update_logs():
+                """Update logs from queue"""
+                logs = []
+                try:
+                    while True:
+                        log = self.log_queue.get_nowait()
+                        logs.append(log)
+                except queue.Empty:
+                    pass
+                
+                if logs:
+                    log_text = "\n".join(logs)
+                    return log_text
+
+            def add_log(message):
+                """Add log message to queue and update UI"""
+                self.log_queue.put(f"[LOG] {message}")
+                return update_logs()
+
+            def clear_log_output():
+                """Clear the log output"""
+                while not self.log_queue.empty():
+                    self.log_queue.get()
+                return ""
+
             def preprocess_data(file, format_type):
                 try:
                     if file is None:
-                        return "Please upload a file first."
+                        return "Please upload a file first.", update_logs()
+                    
+                    add_log(f"Processing {file.name} as {format_type} format...")
+                    
+                    # Validate dataset first
+                    validation_results = validate_dataset(file.name, format_type)
+                    validation_report = generate_dataset_report(validation_results)
+                    add_log(validation_report)
+                    
+                    if not validation_results["is_valid"]:
+                        return "Dataset validation failed. See logs for details.", update_logs()
 
-                    # Process the uploaded file
+                    # Process the dataset
                     dataset = self.model_instance.prepare_dataset(file.name, format_type)
                     self.model_instance.dataset = dataset
-
-                    # Create a summary of the dataset
-                    num_samples = len(dataset["train"])
-
-
-                    # Sample a few examples
-                    examples = dataset["train"].select(range(min(3, num_samples)))
-                    sample_text = []
-                    for ex in examples:
-                        text_key = list(ex.keys())[0] if "text" not in ex else "text"
-                        sample = ex[text_key]
-                        if isinstance(sample, str):
-                            sample_text.append(sample[:100] + "..." if len(sample) > 100 else sample)
-
-                    info = f"Dataset loaded successfully!\n"
-                    info += f"Number of training examples: {num_samples}\n"
-                    info += f"Sample data:\n" + "\n---\n".join(sample_text)
-
-                    return info
-                except Exception as e:
-                    return f"Error preprocessing data: {str(e)}"
-
-            def start_training(
-                model_name, learning_rate, batch_size, epochs, max_length,
-                use_lora, lora_r, lora_alpha, eval_ratio
-            ):
-                try:
-                    if self.model_instance.dataset is None:
-                        return "Please preprocess a dataset first."
-
-                    # Validate parameters
-                    if not model_name:
-                        return "Please select a model."
                     
-                    # Prepare training parameters with proper type conversion
+                    num_samples = len(dataset["train"])
+                    add_log(f"Successfully loaded {num_samples} training examples")
+                    
+                    # Sample examples
+                    examples = dataset["train"].select(range(min(3, num_samples)))
+                    for i, ex in enumerate(examples):
+                        add_log(f"\nExample {i+1}:")
+                        add_log(f"{ex['text'][:200]}...")
+                    
+                    return "Dataset processed successfully!", update_logs()
+                except Exception as e:
+                    add_log(f"Error: {str(e)}")
+                    return f"Error preprocessing data: {str(e)}", update_logs()
+
+            def start_training(*params):
+                try:
+                    if self.training_active:
+                        return "Training is already in progress.", update_logs()
+                    
+                    self.training_active = True
+                    add_log("Initializing training...")
+                    
+                    [model_name, learning_rate, batch_size, epochs, max_length,
+                     use_lora, lora_r, lora_alpha, eval_ratio] = params
+                    
+                    # Prepare training parameters
                     training_params = {
                         "model_name": str(model_name),
                         "learning_rate": float(learning_rate),
@@ -202,26 +250,35 @@ class GemmaUI:
                         "warmup_ratio": float(self.default_params["warmup_ratio"]),
                         "lora_dropout": float(self.default_params["lora_dropout"])
                     }
+                    
+                    add_log("Training parameters:")
+                    for k, v in training_params.items():
+                        add_log(f"  {k}: {v}")
 
-                    # Start training in a separate thread
-                    import threading
                     def train_thread():
-                        status = self.model_instance.train(training_params)
-                        return status
+                        try:
+                            status = self.model_instance.train(training_params)
+                            add_log(status)
+                        except Exception as e:
+                            add_log(f"Training error: {str(e)}")
+                        finally:
+                            self.training_active = False
 
-                    thread = threading.Thread(target=train_thread)
-                    thread.start()
-
-                    return "Training started! Monitor the progress in the Training tab."
+                    threading.Thread(target=train_thread, daemon=True).start()
+                    return "Training started! Monitor the progress in the logs.", update_logs()
+                    
                 except Exception as e:
-                    return f"Error starting training: {str(e)}"
+                    self.training_active = False
+                    add_log(f"Error starting training: {str(e)}")
+                    return f"Error starting training: {str(e)}", update_logs()
 
             def stop_training():
                 if self.model_instance.trainer is not None:
                     # Attempt to stop the trainer
                     self.model_instance.trainer.stop_training = True
-                    return "Training stop signal sent. It may take a moment to complete the current step."
-                return "No active training to stop."
+                    add_log("Training stop signal sent. It may take a moment to complete the current step.")
+                    return "Training stop signal sent. It may take a moment to complete the current step.", update_logs()
+                return "No active training to stop.", update_logs()
 
             def update_progress_plot():
                 try:
@@ -251,7 +308,7 @@ class GemmaUI:
             preprocess_button.click(
                 preprocess_data,
                 inputs=[file_upload, file_format],
-                outputs=dataset_info
+                outputs=[dataset_info, log_output]
             )
 
             start_training_button.click(
@@ -260,13 +317,13 @@ class GemmaUI:
                     model_name, learning_rate, batch_size, epochs, max_length,
                     use_lora, lora_r, lora_alpha, eval_ratio
                 ],
-                outputs=training_status
+                outputs=[training_status, log_output]
             )
 
             stop_training_button.click(
                 stop_training,
                 inputs=[],
-                outputs=training_status
+                outputs=[training_status, log_output]
             )
 
             refresh_plot_button.click(
@@ -286,6 +343,14 @@ class GemmaUI:
                 inputs=[export_format],
                 outputs=export_status
             )
+
+            clear_logs.click(
+                clear_log_output,
+                outputs=[log_output]
+            )
+
+            # Auto-refresh logs
+            log_output.every(1, lambda: update_logs())
 
         return app
 
