@@ -4,6 +4,7 @@ import queue
 from utils.check_dataset import validate_dataset, generate_dataset_report
 from utils.sample_dataset import generate_sample_datasets
 from utils.model import GemmaFineTuning
+from utils.logging import LogManager
 
 class GemmaUI:
     def __init__(self):
@@ -11,6 +12,15 @@ class GemmaUI:
         self.default_params = self.model_instance.default_params
         self.log_queue = queue.Queue()
         self.training_active = False
+        self.log_refresh_interval = 1.0  # seconds
+        self.training_progress = {
+            "total_steps": 0,
+            "current_step": 0,
+            "current_loss": 0.0,
+            "avg_loss": 0.0,
+            "progress_percentage": 0.0
+        }
+        self.log_manager = LogManager()
 
     def create_ui(self):
         """Create the Gradio interface"""
@@ -36,12 +46,12 @@ class GemmaUI:
                         with gr.Column():
                             model_name = gr.Dropdown(
                                 choices=[
-                                    "google/gemma3-1b",
-                                    "google/gemma3-4b",
-                                    "google/gemma3-12b",
-                                    "google/gemma3-27b"
+                                    "unsloth/gemma-2b-it-4bit",
+                                    "unsloth/gemma-7b-it-4bit",
+                                    "unsloth/gemma-2b-4bit",
+                                    "unsloth/gemma-7b-4bit"
                                 ],
-                                value=self.default_params["model_name"],
+                                value="unsloth/gemma-2b-it-4bit",
                                 label="Model Name",
                                 info="Select a Gemma model to fine-tune"
                             )
@@ -138,6 +148,26 @@ class GemmaUI:
                                     value=0,
                                     interactive=False
                                 )
+                            
+                            # Add terminal-like log viewer
+                            with gr.Accordion("Training Logs", open=True):
+                                terminal = gr.Code(
+                                    label="Log Terminal",
+                                    language="bash",
+                                    interactive=False,
+                                    lines=20,
+                                    value="=== Training Log ===\n"
+                                )
+                                log_file_path = gr.Textbox(
+                                    label="Log File Path",
+                                    value=self.log_manager.get_current_log_file(),
+                                    interactive=False
+                                )
+                                with gr.Row():
+                                    auto_scroll = gr.Checkbox(value=True, label="Auto-scroll logs")
+                                    clear_logs = gr.Button("Clear")
+                                    refresh_logs = gr.Button("Refresh")
+                                    open_logs = gr.Button("Open Log File")
 
                 with gr.TabItem("4. Evaluation & Export"):
                     with gr.Row():
@@ -181,8 +211,9 @@ class GemmaUI:
                     return log_text
 
             def add_log(message):
-                """Add log message to queue and update UI"""
+                """Add log message to queue and terminal"""
                 self.log_queue.put(f"[LOG] {message}")
+                self.log_manager.log(message)
                 return update_logs()
 
             def clear_log_output():
@@ -198,7 +229,7 @@ class GemmaUI:
                     
                     add_log(f"Processing {file.name} as {format_type} format...")
                     
-                    # Validate dataset first
+                    # Update validate_dataset call without self
                     validation_results = validate_dataset(file.name, format_type)
                     validation_report = generate_dataset_report(validation_results)
                     add_log(validation_report)
@@ -231,10 +262,11 @@ class GemmaUI:
                     
                     self.training_active = True
                     add_log("Initializing training...")
-                    
+
                     [model_name, learning_rate, batch_size, epochs, max_length,
                      use_lora, lora_r, lora_alpha, eval_ratio] = params
-                    
+                     
+                    add_log("Step 1: Downloading and loading model...")
                     # Prepare training parameters
                     training_params = {
                         "model_name": str(model_name),
@@ -251,20 +283,24 @@ class GemmaUI:
                         "lora_dropout": float(self.default_params["lora_dropout"])
                     }
                     
-                    add_log("Training parameters:")
+                    add_log("Step 2: Model parameters:")
                     for k, v in training_params.items():
                         add_log(f"  {k}: {v}")
-
+                    
+                    add_log("Step 3: Preparing dataset (if needed)...")
+                    # (Assuming dataset was already preprocessed via preprocess_data)
+                    
                     def train_thread():
                         try:
+                            add_log("Step 4: Starting fine-tuning...")
                             status = self.model_instance.train(training_params)
                             add_log(status)
                         except Exception as e:
                             add_log(f"Training error: {str(e)}")
                         finally:
                             self.training_active = False
-
                     threading.Thread(target=train_thread, daemon=True).start()
+                    
                     return "Training started! Monitor the progress in the logs.", update_logs()
                     
                 except Exception as e:
@@ -303,6 +339,15 @@ class GemmaUI:
                     return self.model_instance.export_model(format_type)
                 except Exception as e:
                     return f"Error exporting model: {str(e)}"
+
+            def refresh_terminal():
+                """Refresh terminal with latest logs"""
+                return self.log_manager.read_logs()
+
+            def open_log_file():
+                """Open log file in default text editor"""
+                import webbrowser
+                webbrowser.open(self.log_manager.get_current_log_file())
 
             # Connect UI components to functions
             preprocess_button.click(
@@ -349,12 +394,76 @@ class GemmaUI:
                 outputs=[log_output]
             )
 
-            # Auto-refresh logs
-            log_output.every(1, lambda: update_logs())
+            refresh_logs.click(
+                refresh_terminal,
+                outputs=[terminal]
+            )
+
+            open_logs.click(
+                fn=open_log_file
+            )
+
+            # Replace the gr.on() with proper event handling
+            def periodic_log_update():
+                """Periodic log update function"""
+                logs = update_logs()
+                if logs:
+                    return logs
+                return gr.update()
+
+            # Set up automatic log refresh
+            refresh_event = gr.on(
+                triggers=[
+                    start_training_button.click,
+                    stop_training_button.click,
+                    preprocess_button.click
+                ],
+                fn=periodic_log_update,
+                outputs=log_output
+            ).then(
+                fn=lambda: gr.update(interval=self.log_refresh_interval),
+                outputs=log_output
+            )
+
+            # Add manual refresh button for logs
+            log_refresh_button = gr.Button("Refresh Logs")
+            log_refresh_button.click(
+                fn=update_logs,
+                outputs=log_output
+            )
+
+            def update_progress():
+                """Update training progress indicators"""
+                try:
+                    progress_data = {
+                        progress_bar: self.training_progress["progress_percentage"],
+                        current_loss: self.training_progress["current_loss"],
+                        avg_loss: self.training_progress["avg_loss"],
+                        training_status: f"Step {self.training_progress['current_step']}/{self.training_progress['total_steps']}",
+                        terminal: self.log_manager.read_logs() if auto_scroll.value else gr.skip()
+                    }
+                    return progress_data
+                except Exception as e:
+                    return None
+
+            # Add progress update interval
+            progress_update = gr.on(
+                triggers=start_training_button.click,
+                fn=update_progress,
+                outputs=[progress_bar, current_loss, avg_loss, training_status],
+                stream_every=1  # Update every second
+            )
 
         return app
 
 if __name__ == '__main__':
     ui = GemmaUI()
     app = ui.create_ui()
-    app.launch()
+    # Fix the queue configuration
+    app.queue()  # Enable queuing for async updates
+    app.launch(
+        share=False,
+        server_name="0.0.0.0",
+        server_port=7860,
+        max_threads=3  # Control concurrent operations
+    )

@@ -1,3 +1,4 @@
+from unsloth import FastModel
 import os
 import json
 import torch
@@ -23,7 +24,7 @@ from peft import (
     prepare_model_for_kbit_training
 )
 from datasets import load_dataset
-from unsloth import FastModel
+
 
 
 class GemmaFineTuning:
@@ -37,14 +38,14 @@ class GemmaFineTuning:
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
         self.fourbit_models = [
-            "unsloth/gemma-3-1b-it-unsloth-bnb-4bit",
-            "unsloth/gemma-3-4b-it-unsloth-bnb-4bit",
-            "unsloth/gemma-3-12b-it-unsloth-bnb-4bit",
-            "unsloth/gemma-3-27b-it-unsloth-bnb-4bit",
+            "unsloth/gemma-2b-it-4bit",
+            "unsloth/gemma-7b-it-4bit",
+            "unsloth/gemma-2b-4bit",
+            "unsloth/gemma-7b-4bit"
         ]
         # Default hyperparameters
         self.default_params = {
-            "model_name": "unsloth/gemma-3-1b-it-unsloth-bnb-4bit",
+            "model_name": "unsloth/gemma-2b-it-4bit",
             "learning_rate": 2e-5,
             "batch_size": 8,
             "epochs": 3,
@@ -63,10 +64,10 @@ class GemmaFineTuning:
         try:
             # Map UI model names to actual model IDs
             model_mapping = {
-                "google/gemma3-1b": "unsloth/gemma-3-1b-it-unsloth-bnb-4bit",
-                "google/gemma3-4b": "unsloth/gemma-3-4b-it-unsloth-bnb-4bit",
-                "google/gemma3-12b": "unsloth/gemma-3-12b-it-unsloth-bnb-4bit",
-                "google/gemma3-27b": "unsloth/gemma-3-27b-it-unsloth-bnb-4bit"
+                "google/gemma-2b": "unsloth/gemma-2b-4bit",
+                "google/gemma-7b": "unsloth/gemma-7b-4bit",
+                "google/gemma-2b-it": "unsloth/gemma-2b-it-4bit",
+                "google/gemma-7b-it": "unsloth/gemma-7b-it-4bit"
             }
 
             actual_model_name = model_mapping.get(model_name, model_name)
@@ -430,27 +431,61 @@ class GemmaFineTuning:
             mlm=False
         )
 
-        # Custom callback to store training history
+        # Custom callback to store training history and progress
         class TrainingCallback(TrainerCallback):
             def __init__(self, app):
                 self.app = app
+                self.total_steps = 0
+                self.current_step = 0
+                self.current_loss = 0
+                self.total_loss = 0
+                self.step_count = 0
+
+            def on_train_begin(self, args, state, control, **kwargs):
+                """Called at the beginning of training"""
+                train_dl_size = len(state.train_dataloader)
+                self.total_steps = int(train_dl_size * args.num_train_epochs)
+                self.app.training_progress = {
+                    "total_steps": self.total_steps,
+                    "current_step": 0,
+                    "current_loss": 0.0,
+                    "avg_loss": 0.0,
+                    "progress_percentage": 0.0
+                }
+
+            def on_step_end(self, args, state, control, **kwargs):
+                """Called at the end of each step"""
+                self.current_step = state.global_step
+                progress = (self.current_step / self.total_steps) * 100
+                self.app.training_progress["current_step"] = self.current_step
+                self.app.training_progress["progress_percentage"] = progress
 
             def on_log(self, args, state, control, logs=None, **kwargs):
+                """Called when logs are written"""
                 if logs:
-                    for key in ['loss', 'eval_loss']:
-                        if key in logs:
-                            self.app.training_history[key].append(logs[key])
-                            if 'step' in logs:
-                                self.app.training_history['step'].append(logs['step'])
+                    if "loss" in logs:
+                        self.current_loss = logs["loss"]
+                        self.total_loss += logs["loss"]
+                        self.step_count += 1
+                        avg_loss = self.total_loss / self.step_count
+                        
+                        self.app.training_progress["current_loss"] = self.current_loss
+                        self.app.training_progress["avg_loss"] = avg_loss
+                        
+                        for key in ['loss', 'eval_loss']:
+                            if key in logs:
+                                self.app.training_history[key].append(logs[key])
+                                if 'step' in logs:
+                                    self.app.training_history['step'].append(logs['step'])
 
-        # Create trainer
+        # Create trainer with callback
         trainer = Trainer(
             model=model,
             args=training_args,
             train_dataset=dataset["train"],
             eval_dataset=dataset["validation"] if "validation" in dataset else None,
             data_collator=data_collator,
-            callbacks=[TrainingCallback]
+            callbacks=[TrainingCallback(self)]
         )
 
         return trainer

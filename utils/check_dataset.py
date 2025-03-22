@@ -1,7 +1,4 @@
-
-
-
-def validate_dataset(self, file_path, format_type):
+def validate_dataset(file_path, format_type):  # Remove self parameter
     """
     Validate and analyze the dataset format, providing detailed feedback
 
